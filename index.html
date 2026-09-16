@@ -138,14 +138,30 @@
     }
 
     let saving = false;   // true while collecting GPS fixes for the spot
-    let best = null;      // most accurate fix seen while saving
+    let samples = [];     // fixes collected while saving
+    let recent = [];      // last few fixes while tracking
+    let timeUp = false;
     let saveTimer = null;
 
-    // Save the most accurate fix we got
+    // Average of fixes, more accurate fixes count more (weight = 1 / accuracy²)
+    function average(fixes) {
+      let lat = 0, lon = 0, total = 0;
+      for (const f of fixes) {
+        const w = 1 / (f.accuracy ** 2);
+        lat += f.lat * w;
+        lon += f.lon * w;
+        total += w;
+      }
+      return { lat: lat / total, lon: lon / total, accuracy: fixes[fixes.length - 1].accuracy };
+    }
+
+    // Save the averaged position
     function finishSaving() {
       clearTimeout(saveTimer);
       saving = false;
-      spot = { lat: best.lat, lon: best.lon };
+      spot = average(samples);
+      recent = samples.slice(-5);
+      current = average(recent);
       saveBtn.disabled = false;
       saveBtn.textContent = 'Save spot';
       saveBtn.classList.add('hidden');
@@ -160,24 +176,31 @@
       }
       startCompass();
       saving = true;
-      best = null;
+      samples = [];
+      timeUp = false;
       saveBtn.disabled = true;
-      saveBtn.textContent = 'Locating…';
+      saveBtn.textContent = 'Hold still…';
 
-      // The first GPS fix is often rough, so keep the best one until it's
-      // within 10 m, or give up waiting after 10 seconds
+      // Collect up to 10 fixes (or whatever arrived in 6 seconds) and average them
       watchId = navigator.geolocation.watchPosition(p => {
-        current = { lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy };
+        const fix = { lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy };
         if (saving) {
-          if (!best || current.accuracy < best.accuracy) best = current;
-          saveBtn.textContent = `Locating… ±${Math.round(best.accuracy)} m`;
-          if (best.accuracy <= 10) finishSaving();
+          samples.push(fix);
+          saveBtn.textContent = `Hold still… ${samples.length}/10 (±${Math.round(fix.accuracy)} m)`;
+          if (samples.length >= 10 || timeUp) finishSaving();
           return;
         }
+        // While walking, average the last 5 fixes to reduce jumping
+        recent.push(fix);
+        if (recent.length > 5) recent.shift();
+        current = average(recent);
         updateView();
       }, err => statusEl.textContent = err.message, { enableHighAccuracy: true, maximumAge: 0 });
 
-      saveTimer = setTimeout(() => { if (saving && best) finishSaving(); }, 10000);
+      saveTimer = setTimeout(() => {
+        timeUp = true;
+        if (saving && samples.length > 0) finishSaving();
+      }, 6000);
     });
 
     removeBtn.addEventListener('click', () => {
