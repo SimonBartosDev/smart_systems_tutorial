@@ -90,10 +90,23 @@
         statusEl.textContent = 'Waiting for compass…';
         return;
       }
-      statusEl.textContent = '';
+      // When closer than the GPS error, the direction is basically random
+      statusEl.textContent = `GPS accuracy ±${Math.round(current.accuracy)} m` +
+        (d < current.accuracy ? ' · too close for exact direction' : '');
       // Arrow points up by default, so rotate by bearing relative to where the phone faces
       const angle = getBearing(current, spot) - heading;
       arrow.style.transform = `rotate(${angle}deg)`;
+    }
+
+    // Smooth the compass so the arrow doesn't jitter (handles 359° -> 0° wrap)
+    function setHeading(h) {
+      if (heading === null) {
+        heading = h;
+      } else {
+        const diff = ((h - heading + 540) % 360) - 180;
+        heading = (heading + diff * 0.2 + 360) % 360;
+      }
+      updateView();
     }
 
     // Compass: iOS gives webkitCompassHeading, Android gives absolute alpha
@@ -114,16 +127,30 @@
       if ('ondeviceorientationabsolute' in window) {
         window.addEventListener('deviceorientationabsolute', e => {
           if (e.alpha === null) return;
-          heading = (360 - e.alpha) % 360;
-          updateView();
+          setHeading((360 - e.alpha) % 360);
         });
       } else {
         window.addEventListener('deviceorientation', e => {
           if (e.webkitCompassHeading === undefined) return;
-          heading = e.webkitCompassHeading;
-          updateView();
+          setHeading(e.webkitCompassHeading);
         });
       }
+    }
+
+    let saving = false;   // true while collecting GPS fixes for the spot
+    let best = null;      // most accurate fix seen while saving
+    let saveTimer = null;
+
+    // Save the most accurate fix we got
+    function finishSaving() {
+      clearTimeout(saveTimer);
+      saving = false;
+      spot = { lat: best.lat, lon: best.lon };
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save spot';
+      saveBtn.classList.add('hidden');
+      tracker.classList.remove('hidden');
+      updateView();
     }
 
     saveBtn.addEventListener('click', () => {
@@ -132,24 +159,31 @@
         return;
       }
       startCompass();
-      statusEl.textContent = 'Getting location…';
+      saving = true;
+      best = null;
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Locating…';
 
-      navigator.geolocation.getCurrentPosition(pos => {
-        spot = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-        current = { ...spot };
-        saveBtn.classList.add('hidden');
-        tracker.classList.remove('hidden');
+      // The first GPS fix is often rough, so keep the best one until it's
+      // within 10 m, or give up waiting after 10 seconds
+      watchId = navigator.geolocation.watchPosition(p => {
+        current = { lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy };
+        if (saving) {
+          if (!best || current.accuracy < best.accuracy) best = current;
+          saveBtn.textContent = `Locating… ±${Math.round(best.accuracy)} m`;
+          if (best.accuracy <= 10) finishSaving();
+          return;
+        }
         updateView();
+      }, err => statusEl.textContent = err.message, { enableHighAccuracy: true, maximumAge: 0 });
 
-        watchId = navigator.geolocation.watchPosition(p => {
-          current = { lat: p.coords.latitude, lon: p.coords.longitude };
-          updateView();
-        }, err => statusEl.textContent = err.message, { enableHighAccuracy: true });
-      }, err => statusEl.textContent = err.message, { enableHighAccuracy: true });
+      saveTimer = setTimeout(() => { if (saving && best) finishSaving(); }, 10000);
     });
 
     removeBtn.addEventListener('click', () => {
       navigator.geolocation.clearWatch(watchId);
+      clearTimeout(saveTimer);
+      saving = false;
       spot = null;
       current = null;
       distanceEl.textContent = '–';
