@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Find My Spot</title>
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      font-family: system-ui, sans-serif;
+      background: #111;
+      color: #fff;
+    }
+    button {
+      font-size: 20px;
+      padding: 16px 32px;
+      border: none;
+      border-radius: 12px;
+      background: #2e7dff;
+      color: #fff;
+    }
+    #removeBtn { background: #d33; font-size: 16px; }
+    #arrow { width: 200px; height: 200px; }
+    #distance { font-size: 40px; font-weight: bold; }
+    #status { font-size: 14px; color: #aaa; min-height: 1em; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <button id="saveBtn">Save spot</button>
+
+  <div id="tracker" class="hidden" style="display:flex; flex-direction:column; align-items:center; gap:24px;">
+    <svg id="arrow" viewBox="0 0 100 100">
+      <polygon points="50,5 85,90 50,70 15,90" fill="#2e7dff" />
+    </svg>
+    <div id="distance">–</div>
+    <button id="removeBtn">Remove spot</button>
+  </div>
+
+  <div id="status"></div>
+
+  <script>
+    const saveBtn = document.getElementById('saveBtn');
+    const removeBtn = document.getElementById('removeBtn');
+    const tracker = document.getElementById('tracker');
+    const arrow = document.getElementById('arrow');
+    const distanceEl = document.getElementById('distance');
+    const statusEl = document.getElementById('status');
+
+    let spot = null;      // saved location {lat, lon}
+    let current = null;   // latest GPS position {lat, lon}
+    let heading = null;   // compass heading in degrees (0 = north, clockwise)
+    let watchId = null;
+    let compassStarted = false;
+
+    const toRad = d => d * Math.PI / 180;
+    const toDeg = r => r * 180 / Math.PI;
+
+    // Distance in meters between two coordinates (haversine formula)
+    function getDistance(a, b) {
+      const R = 6371000;
+      const dLat = toRad(b.lat - a.lat);
+      const dLon = toRad(b.lon - a.lon);
+      const h = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(h));
+    }
+
+    // Direction from a to b in degrees (0 = north, clockwise)
+    function getBearing(a, b) {
+      const y = Math.sin(toRad(b.lon - a.lon)) * Math.cos(toRad(b.lat));
+      const x = Math.cos(toRad(a.lat)) * Math.sin(toRad(b.lat)) -
+                Math.sin(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.cos(toRad(b.lon - a.lon));
+      return (toDeg(Math.atan2(y, x)) + 360) % 360;
+    }
+
+    function updateView() {
+      if (!spot || !current) return;
+
+      const d = getDistance(current, spot);
+      distanceEl.textContent = d < 1000 ? Math.round(d) + ' m' : (d / 1000).toFixed(2) + ' km';
+
+      if (heading === null) {
+        statusEl.textContent = 'Waiting for compass…';
+        return;
+      }
+      statusEl.textContent = '';
+      // Arrow points up by default, so rotate by bearing relative to where the phone faces
+      const angle = getBearing(current, spot) - heading;
+      arrow.style.transform = `rotate(${angle}deg)`;
+    }
+
+    // Compass: iOS gives webkitCompassHeading, Android gives absolute alpha
+    async function startCompass() {
+      if (compassStarted) return;
+      compassStarted = true;
+
+      // iOS requires permission, must be requested from a click
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const result = await DeviceOrientationEvent.requestPermission();
+        if (result !== 'granted') {
+          statusEl.textContent = 'Compass permission denied';
+          return;
+        }
+      }
+
+      if ('ondeviceorientationabsolute' in window) {
+        window.addEventListener('deviceorientationabsolute', e => {
+          if (e.alpha === null) return;
+          heading = (360 - e.alpha) % 360;
+          updateView();
+        });
+      } else {
+        window.addEventListener('deviceorientation', e => {
+          if (e.webkitCompassHeading === undefined) return;
+          heading = e.webkitCompassHeading;
+          updateView();
+        });
+      }
+    }
+
+    saveBtn.addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        statusEl.textContent = 'GPS not supported';
+        return;
+      }
+      startCompass();
+      statusEl.textContent = 'Getting location…';
+
+      navigator.geolocation.getCurrentPosition(pos => {
+        spot = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        current = { ...spot };
+        saveBtn.classList.add('hidden');
+        tracker.classList.remove('hidden');
+        updateView();
+
+        watchId = navigator.geolocation.watchPosition(p => {
+          current = { lat: p.coords.latitude, lon: p.coords.longitude };
+          updateView();
+        }, err => statusEl.textContent = err.message, { enableHighAccuracy: true });
+      }, err => statusEl.textContent = err.message, { enableHighAccuracy: true });
+    });
+
+    removeBtn.addEventListener('click', () => {
+      navigator.geolocation.clearWatch(watchId);
+      spot = null;
+      current = null;
+      distanceEl.textContent = '–';
+      statusEl.textContent = '';
+      tracker.classList.add('hidden');
+      saveBtn.classList.remove('hidden');
+    });
+  </script>
+</body>
+</html>
